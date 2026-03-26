@@ -57,10 +57,17 @@ cli = [
     "rich>=13.0.0",
 ]
 
+# MCP server - for AI agent access to EvalHub
+mcp = [
+    "eval-hub-sdk[core]",
+    "click>=8.1.0",
+    "mcp>=1.0.0",
+]
+
 # Development dependencies
 # NOTE: Versions should match .pre-commit-config.yaml and .github/workflows/pre-commit.yml
 dev = [
-    "eval-hub-sdk[cli]",
+    "eval-hub-sdk[cli,mcp]",
     "pytest>=7.4.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=4.1.0",
@@ -76,10 +83,11 @@ examples = [
 ]
 
 # All core functionality (excludes examples which are optional)
-all = ["eval-hub-sdk[core,adapter,client,cli,dev]"]
+all = ["eval-hub-sdk[core,adapter,client,cli,mcp,dev]"]
 
 [project.scripts]
 evalhub = "evalhub.cli.bootstrap:main"
+evalhub-mcp = "evalhub.mcp.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/eval-hub"
@@ -151,6 +159,8 @@ module = [
     "oras",
     "olot.*",
     "olot",
+    "mcp",
+    "mcp.*",
     # Optional auth/cloud deps used by transitive deps (no stubs needed)
     "google.*",
     "databricks.*",
