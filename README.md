@@ -34,7 +34,7 @@ graph TB
         subgraph sidecar["Sidecar Container"]
             S1["ConfigMap mounted<br/>/meta/job.json"]
             S2["Forward status to<br/>EvalHub service (HTTP)"]
-            S3["Authenticated Push OCI artifacts to<br/>OCI Registry"]
+            S3["Authenticated push of<br/>OCI artifacts<br/>to OCI Registry"]
             S4["Forward results to<br/>EvalHub service (HTTP)"]
         end
 
@@ -177,90 +177,25 @@ class MyFrameworkAdapter(FrameworkAdapter):
 
 The SDK exposes an OCI persistence API via `callbacks.create_oci_artifact(...)`.
 
-Note: in this POC the underlying persister is currently a **placeholder/no-op** implementation (it logs what it would do and returns a dummy digest). This is still useful for adapter development because it keeps the interface stable while storage is implemented.
-
 #### Using DefaultCallbacks
 
 Use `DefaultCallbacks` for both production and development:
 
 ```python
-from evalhub.adapter import AdapterSettings, DefaultCallbacks, JobSpec
+from evalhub.adapter import DefaultCallbacks
 
-# Load settings and job spec explicitly
-settings = AdapterSettings.from_env()
-settings.validate_runtime()
-job_spec = JobSpec.from_file(settings.resolved_job_spec_path)
+# Initialize adapter (loads settings and job spec internally)
+adapter = MyFrameworkAdapter()
 
-# Initialize adapter with settings
-adapter = MyFrameworkAdapter(settings=settings)
+# Create callbacks from adapter (auto-configures sidecar, OCI proxy, etc.)
+callbacks = DefaultCallbacks.from_adapter(adapter)
 
-callbacks = DefaultCallbacks(
-    job_id=job_spec.job_id,
-    benchmark_id=job_spec.benchmark_id,
-    benchmark_index=job_spec.benchmark_index,
-    sidecar_url=job_spec.callback_url,  # SERVICE_URL
-    registry_url=settings.registry_url,      # REGISTRY_URL
-    registry_username=settings.registry_username,
-    registry_password=settings.registry_password,
-    insecure=settings.registry_insecure,     # REGISTRY_INSECURE (true/false)
-)
-
-results = adapter.run_benchmark_job(job_spec, callbacks)
+results = adapter.run_benchmark_job(adapter.job_spec, callbacks)
 ```
 
 **Key Points:**
 - **Status updates**: Sent to sidecar if `sidecar_url` is provided, otherwise logged locally. Both `report_status` and `report_results` events always include `benchmark_index` (and `provider_id` when set) so the service can associate events with the correct benchmark in multi-benchmark jobs.
-- **OCI artifacts**: Always pushed directly by the SDK using `OCIArtifactPersister`
-
-#### Advanced: Direct Persister Usage
-
-The OCI functionality follows the `Persister` protocol. You can use `OCIArtifactPersister` directly or implement your own:
-
-```python
-from evalhub.adapter import OCIArtifactPersister, OCIArtifactSpec, Persister
-from pathlib import Path
-
-# Use the default implementation
-persister: Persister = OCIArtifactPersister(
-    registry_url="ghcr.io",
-    username="user",
-    password="token"
-)
-
-result = persister.persist(
-    OCIArtifactSpec(
-        files=[Path("results.json"), Path("metrics.csv")],
-        job_id="job-123",
-        benchmark_id="mmlu",
-        model_name="llama-2-7b",
-        title="MMLU Evaluation Results",
-        annotations={"score": "0.85"}
-    )
-)
-
-print(f"Pushed to: {result.reference}")
-print(f"Digest: {result.digest}")
-```
-
-**Custom Persister**: Implement your own `Persister` for custom storage backends:
-
-```python
-from evalhub.adapter import Persister, OCIArtifactSpec, OCIArtifactResult
-
-class S3Persister:
-    """Custom persister that stores artifacts in S3."""
-
-    def persist(self, spec: OCIArtifactSpec) -> OCIArtifactResult:
-        # Upload files to S3
-        s3_url = self.upload_to_s3(spec.files)
-        return OCIArtifactResult(
-            digest=compute_digest(spec.files),
-            reference=s3_url,
-            size_bytes=compute_size(spec.files)
-        )
-```
-
-**Note**: OCI pushing is not yet implemented in this POC; the persister returns mock results.
+- **OCI artifacts**: Created via SDK callbacks and pushed to the OCI registry through the sidecar-authenticated flow when mode is Kubernetes.
 
 ### 4. Containerise Your Adapter
 
