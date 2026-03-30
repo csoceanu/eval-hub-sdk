@@ -51,7 +51,7 @@ client = [
 
 # CLI - command-line interface
 cli = [
-    "eval-hub-sdk[core]",
+    "eval-hub-sdk[core,mcp]",
     "click>=8.1.0",
     "pyyaml>=6.0",
     "rich>=13.0.0",
@@ -60,7 +60,6 @@ cli = [
 # MCP server - for AI agent access to EvalHub
 mcp = [
     "eval-hub-sdk[core]",
-    "click>=8.1.0",
     "mcp>=1.0.0",
 ]
 
@@ -87,7 +86,6 @@ all = ["eval-hub-sdk[core,adapter,client,cli,mcp,dev]"]
 
 [project.scripts]
 evalhub = "evalhub.cli.bootstrap:main"
-evalhub-mcp = "evalhub.mcp.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/eval-hub"
