@@ -737,7 +737,7 @@ requires-dist = [
     { name = "eval-hub-sdk", extras = ["core"], marker = "extra == 'adapter'" },
     { name = "eval-hub-sdk", extras = ["core"], marker = "extra == 'client'" },
     { name = "eval-hub-sdk", extras = ["core"], marker = "extra == 'mcp'" },
-    { name = "eval-hub-sdk", extras = ["core", "mcp"], marker = "extra == 'cli'" },
+    { name = "eval-hub-sdk", extras = ["mcp"], marker = "extra == 'cli'" },
     { name = "httpx", marker = "extra == 'core'", specifier = ">=0.25.0" },
     { name = "importlib-metadata", specifier = ">=6.0.0" },
     { name = "lm-eval", marker = "extra == 'examples'", specifier = ">=0.4.0" },
