@@ -100,6 +100,9 @@ Create a new Python file for your adapter:
 
 ```python
 # my_framework_adapter.py
+from datetime import UTC, datetime
+from pathlib import Path
+
 from evalhub.adapter import (
     FrameworkAdapter,
     JobSpec,
@@ -109,6 +112,8 @@ from evalhub.adapter import (
     JobPhase,
     JobStatusUpdate,
     EvaluationResult,
+    MessageInfo,
+    OCIArtifactSpec,
 )
 
 class MyFrameworkAdapter(FrameworkAdapter):
@@ -122,7 +127,10 @@ class MyFrameworkAdapter(FrameworkAdapter):
             status=JobStatus.RUNNING,
             phase=JobPhase.INITIALIZING,
             progress=0.0,
-            message="Loading benchmark and model"
+            message=MessageInfo(
+                message="Loading benchmark and model",
+                message_code="initializing",
+            ),
         ))
 
         # Load your evaluation framework and benchmark
@@ -135,7 +143,10 @@ class MyFrameworkAdapter(FrameworkAdapter):
             status=JobStatus.RUNNING,
             phase=JobPhase.RUNNING_EVALUATION,
             progress=0.3,
-            message=f"Evaluating on {config.num_examples} examples"
+            message=MessageInfo(
+                message=f"Evaluating on {config.num_examples} examples",
+                message_code="running_evaluation",
+            ),
         ))
 
         # Run evaluation (adapter-specific params come from parameters)
@@ -146,19 +157,28 @@ class MyFrameworkAdapter(FrameworkAdapter):
             num_few_shot=config.parameters.get("num_few_shot", 0)
         )
 
-        # Save and persist artifacts
-        output_files = save_results(config.job_id, results)
-        artifact = callbacks.create_oci_artifact(OCIArtifactSpec(
-            files=output_files,
-            job_id=config.job_id,
-            benchmark_id=config.benchmark_id,
-            model_name=config.model.name
-        ))
+        # Save results to a directory and persist as OCI artifact
+        results_dir = save_results(config.id, results)
+        oci_artifact = None
+        oci_exports = config.exports.oci if config.exports else None
+        if oci_exports is not None:
+            coords = oci_exports.coordinates.model_copy(deep=True)
+            coords.annotations.update({
+                "org.opencontainers.image.created": datetime.now(UTC).isoformat(),
+                "io.github.eval-hub.benchmark": config.benchmark_id,
+                "io.github.eval-hub.model": config.model.name,
+                "io.github.eval-hub.job_id": config.id,
+            })
+            oci_artifact = callbacks.create_oci_artifact(OCIArtifactSpec(
+                files_path=results_dir,
+                coordinates=coords,
+            ))
 
         # Return results
         return JobResults(
-            job_id=config.job_id,
+            id=config.id,
             benchmark_id=config.benchmark_id,
+            benchmark_index=config.benchmark_index,
             model_name=config.model.name,
             results=[
                 EvaluationResult(
@@ -169,7 +189,7 @@ class MyFrameworkAdapter(FrameworkAdapter):
             ],
             num_examples_evaluated=len(results),
             duration_seconds=results["duration"],
-            oci_artifact=artifact
+            oci_artifact=oci_artifact,
         )
 ```
 
@@ -223,38 +243,24 @@ Create the entrypoint script:
 ```python
 # run_adapter.py
 from my_framework_adapter import MyFrameworkAdapter
-from evalhub.adapter import AdapterSettings, DefaultCallbacks, JobSpec
+from evalhub.adapter import DefaultCallbacks
 
-# Load settings and job spec explicitly
-settings = AdapterSettings.from_env()
-settings.validate_runtime()
-job_spec = JobSpec.from_file(settings.resolved_job_spec_path)
+# Initialize adapter (loads settings and job spec internally)
+adapter = MyFrameworkAdapter()
 
-# Initialize adapter with settings
-adapter = MyFrameworkAdapter(settings=settings)
-
-# Create callbacks
-callbacks = DefaultCallbacks(
-    job_id=job_spec.job_id,
-    benchmark_id=job_spec.benchmark_id,
-    benchmark_index=job_spec.benchmark_index,
-    sidecar_url=job_spec.callback_url,
-    registry_url=settings.registry_url,
-    registry_username=settings.registry_username,
-    registry_password=settings.registry_password,
-    insecure=settings.registry_insecure,
-)
+# Create callbacks from adapter (auto-configures sidecar, OCI proxy, etc.)
+callbacks = DefaultCallbacks.from_adapter(adapter)
 
 # Run adapter
-results = adapter.run_benchmark_job(job_spec, callbacks)
+results = adapter.run_benchmark_job(adapter.job_spec, callbacks)
 
 # Report final results to service via sidecar
 callbacks.report_results(results)
 
-print(f"Job completed: {results.job_id}")
+print(f"Job completed: {results.id}")
 ```
 
-### 4. Deploy to Kubernetes
+### 5. Deploy to Kubernetes
 
 The eval-hub service will create Kubernetes Jobs for your adapter:
 
@@ -285,7 +291,7 @@ spec:
           name: job-123-spec
 ```
 
-For a complete working example, see `evalhub/adapter/examples/simple_adapter.py`.
+For a complete working example, see `examples/simple_adapter/simple_adapter.py`.
 
 ## Package Organization Guide
 
@@ -332,11 +338,19 @@ from evalhub import (
 )
 ```
 
-## Complete Example
+## Examples
 
-The SDK includes a complete reference implementation showing all adapter patterns:
+### Contributed Adapters
 
-**Example Adapter**: `src/evalhub/adapter/examples/simple_adapter.py`
+For real use-case adapter implementations, see the
+[eval-hub-contrib](https://github.com/eval-hub/eval-hub-contrib/tree/main/adapters)
+repository which includes adapters for GuideLLM, LightEval, and MTEB.
+
+### Simple Adapter Example
+
+The SDK includes a reference implementation showing all adapter patterns:
+
+**Example Adapter**: `examples/simple_adapter/simple_adapter.py`
 
 This example demonstrates:
 - Loading JobSpec from mounted ConfigMap
@@ -452,7 +466,7 @@ When using `DefaultCallbacks`, pass `benchmark_index` (and optionally `provider_
 **JobResults** - Returned when job completes:
 ```python
 class JobResults(BaseModel):
-    job_id: str
+    id: str
     benchmark_id: str
     benchmark_index: int                       # Index within the job
     model_name: str
@@ -490,33 +504,21 @@ CMD ["python", "entrypoint.py"]
 ```python
 # entrypoint.py
 from my_adapter import MyFrameworkAdapter
-from evalhub.adapter import AdapterSettings, DefaultCallbacks, JobSpec
+from evalhub.adapter import DefaultCallbacks
 
-# Load settings and job spec explicitly
-settings = AdapterSettings.from_env()
-settings.validate_runtime()
-job_spec = JobSpec.from_file(settings.resolved_job_spec_path)
+# Initialize adapter (loads settings and job spec internally)
+adapter = MyFrameworkAdapter()
 
-# Initialize adapter with settings
-adapter = MyFrameworkAdapter(settings=settings)
-
-# Create callbacks
-callbacks = DefaultCallbacks(
-    job_id=job_spec.job_id,
-    benchmark_id=job_spec.benchmark_id,
-    benchmark_index=job_spec.benchmark_index,
-    sidecar_url=job_spec.callback_url,
-    registry_url=settings.registry_url,
-    insecure=settings.registry_insecure,
-)
+# Create callbacks from adapter (auto-configures sidecar, OCI proxy, etc.)
+callbacks = DefaultCallbacks.from_adapter(adapter)
 
 # Run adapter
-results = adapter.run_benchmark_job(job_spec, callbacks)
+results = adapter.run_benchmark_job(adapter.job_spec, callbacks)
 
 # Report final results
 callbacks.report_results(results)
 
-print(f"Job {results.job_id} completed with score: {results.overall_score}")
+print(f"Job {results.id} completed with score: {results.overall_score}")
 ```
 
 ### Kubernetes Job
@@ -586,9 +588,9 @@ from evalhub.adapter import AdapterSettings
 
 def test_settings_parse(monkeypatch):
     monkeypatch.setenv("EVALHUB_MODE", "local")
-    monkeypatch.setenv("REGISTRY_URL", "localhost:5000")
+    monkeypatch.setenv("OCI_INSECURE", "true")
     s = AdapterSettings.from_env()
-    assert str(s.registry_url) == "localhost:5000"
+    assert s.oci_insecure is True
 ```
 
 ### Quality Assurance
