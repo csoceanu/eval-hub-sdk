@@ -17,6 +17,7 @@ import evalhub
 from evalhub.models import (
     BenchmarkConfig,
     CollectionCreateRequest,
+    ExperimentConfig,
     JobStatus,
     JobSubmissionRequest,
     ModelConfig,
@@ -139,6 +140,7 @@ def _build_request_from_flags(
     description: str | None,
     metrics: tuple[str, ...],
     dataset: str | None,
+    experiment: ExperimentConfig | None = None,
 ) -> JobSubmissionRequest:
     """Build a JobSubmissionRequest from CLI flags."""
     parameters: dict[str, Any] = {}
@@ -155,6 +157,7 @@ def _build_request_from_flags(
         description=description,
         model=ModelConfig(url=model_url, name=model_name),
         benchmarks=benchmarks,
+        experiment=experiment,
     )
 
 
@@ -176,6 +179,12 @@ def _build_request_from_flags(
 )
 @click.option("--dataset", default=None, help="Dataset identifier or path.")
 @click.option("--description", default=None, help="Job description.")
+@click.option(
+    "--experiment",
+    "experiment_name",
+    default=None,
+    help="MLflow experiment name for this job (optional).",
+)
 @click.option(
     "--wait", "wait_for", is_flag=True, default=False, help="Block until job completes."
 )
@@ -203,6 +212,7 @@ def eval_run(
     metrics: tuple[str, ...],
     dataset: str | None,
     description: str | None,
+    experiment_name: str | None,
     wait_for: bool,
     timeout: float | None,
     poll_interval: float,
@@ -218,6 +228,9 @@ def eval_run(
       evalhub eval run --config eval.yaml --wait
       evalhub eval run --name my-eval --model-url http://vllm:8000/v1 \\
           --model-name llama3 --provider lm_evaluation_harness -b mmlu -b hellaswag
+      evalhub eval run --name my-eval --model-url http://vllm:8000/v1 \\
+          --model-name llama3 --provider lm_evaluation_harness -b mmlu \\
+          --experiment my-experiment
     """
     client = get_client(ctx)
 
@@ -230,6 +243,9 @@ def eval_run(
                 "Either --config or all of --name, --model-url, --model-name, "
                 "--provider, and --benchmark are required."
             )
+        experiment: ExperimentConfig | None = None
+        if experiment_name:
+            experiment = ExperimentConfig(name=experiment_name)
         request = _build_request_from_flags(
             name=cast(str, name),
             model_url=cast(str, model_url),
@@ -239,6 +255,7 @@ def eval_run(
             description=description,
             metrics=metrics,
             dataset=dataset,
+            experiment=experiment,
         )
 
     job = client.jobs.submit(request)

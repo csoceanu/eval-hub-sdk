@@ -147,6 +147,37 @@ class TestEvalRun:
         req = mock_client.jobs.submit.call_args[0][0]
         assert req.name == "inline-eval"
         assert len(req.benchmarks) == 2
+        assert req.experiment is None
+
+    def test_run_with_inline_experiment(
+        self, runner: CliRunner, config_file: Path, mock_client: MagicMock
+    ) -> None:
+        mock_client.jobs.submit.return_value = _make_job()
+        with patch("evalhub.cli.main.get_client", return_value=mock_client):
+            result = runner.invoke(
+                main,
+                [
+                    "eval",
+                    "run",
+                    "--name",
+                    "inline-eval",
+                    "--model-url",
+                    "http://vllm:8000/v1",
+                    "--model-name",
+                    "llama3",
+                    "--provider",
+                    "lm_eval",
+                    "-b",
+                    "mmlu",
+                    "--experiment",
+                    "test_exp",
+                ],
+            )
+        assert result.exit_code == 0
+        req = mock_client.jobs.submit.call_args[0][0]
+        assert req.experiment is not None
+        assert req.experiment.name == "test_exp"
+        assert req.experiment.tags == []
 
     def test_run_missing_required_flags(
         self, runner: CliRunner, config_file: Path, mock_client: MagicMock
