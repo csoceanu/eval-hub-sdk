@@ -179,6 +179,69 @@ class TestEvalRun:
         assert req.experiment.name == "test_exp"
         assert req.experiment.tags == []
 
+    def test_run_with_inline_oci(
+        self, runner: CliRunner, config_file: Path, mock_client: MagicMock
+    ) -> None:
+        mock_client.jobs.submit.return_value = _make_job()
+        with patch("evalhub.cli.main.get_client", return_value=mock_client):
+            result = runner.invoke(
+                main,
+                [
+                    "eval",
+                    "run",
+                    "--name",
+                    "inline-eval",
+                    "--model-url",
+                    "http://vllm:8000/v1",
+                    "--model-name",
+                    "llama3",
+                    "--provider",
+                    "lm_eval",
+                    "-b",
+                    "mmlu",
+                    "--oci-host",
+                    "quay.io",
+                    "--oci-repository",
+                    "myorg/myartifact",
+                    "--oci-connection",
+                    "my-oci-secret",
+                ],
+            )
+        assert result.exit_code == 0
+        req = mock_client.jobs.submit.call_args[0][0]
+        assert req.exports is not None
+        assert req.exports.oci is not None
+        assert req.exports.oci.coordinates.oci_host == "quay.io"
+        assert req.exports.oci.coordinates.oci_repository == "myorg/myartifact"
+        assert req.exports.oci.k8s is not None
+        assert req.exports.oci.k8s.connection == "my-oci-secret"
+
+    def test_run_oci_requires_host_and_repo(
+        self, runner: CliRunner, config_file: Path, mock_client: MagicMock
+    ) -> None:
+        with patch("evalhub.cli.main.get_client", return_value=mock_client):
+            result = runner.invoke(
+                main,
+                [
+                    "eval",
+                    "run",
+                    "--name",
+                    "inline-eval",
+                    "--model-url",
+                    "http://vllm:8000/v1",
+                    "--model-name",
+                    "llama3",
+                    "--provider",
+                    "lm_eval",
+                    "-b",
+                    "mmlu",
+                    "--oci-host",
+                    "quay.io",
+                ],
+            )
+        assert result.exit_code != 0
+        assert "OCI" in result.output
+
     def test_run_missing_required_flags(
         self, runner: CliRunner, config_file: Path, mock_client: MagicMock
     ) -> None:
