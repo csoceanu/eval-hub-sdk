@@ -120,7 +120,15 @@ class OCIArtifactPersister:
                     elif item.is_dir():
                         logger.debug("  Dir:  %s", item.relative_to(temp_path))
 
-            provider = oras.provider.Registry(insecure=self.oci_insecure)
+            # python-oras: Registry(insecure=...) chooses the URL scheme for registry calls:
+            #   insecure=True  -> http://   (plain HTTP)
+            #   insecure=False -> https://  (TLS)
+            # Push targets are host/path only (no scheme); the flag only affects which scheme is used.
+            # Use HTTP when (1) OCI_INSECURE is set for a plain-HTTP registry, or (2) oci_proxy_host
+            # is set: the in-pod sidecar accepts HTTP on :8080, and we must not use https:// to it
+            # when OCI_INSECURE is false.
+            registry_uses_http = self.oci_insecure or (self.oci_proxy_host is not None)
+            provider = oras.provider.Registry(insecure=registry_uses_http)
             if not self.oci_proxy_host:
                 provider.auth.hostname = spec.coordinates.oci_host
                 if self.oci_auth_config_path:
