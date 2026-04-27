@@ -132,7 +132,7 @@ class AsyncJobsResource:
         """
         params = {}
         if status:
-            params["status_filter"] = status.value
+            params["status"] = status.value
         if limit:
             params["limit"] = str(limit)
 
@@ -295,7 +295,7 @@ class SyncJobsResource:
         """
         params = {}
         if status:
-            params["status_filter"] = status.value
+            params["status"] = status.value
         if limit:
             params["limit"] = str(limit)
 
