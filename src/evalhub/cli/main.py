@@ -17,10 +17,14 @@ import evalhub
 from evalhub.models import (
     BenchmarkConfig,
     CollectionCreateRequest,
+    EvaluationExports,
+    EvaluationExportsOCI,
     ExperimentConfig,
     JobStatus,
     JobSubmissionRequest,
     ModelConfig,
+    OCIConnectionConfig,
+    OCICoordinates,
 )
 
 from . import config as cfg
@@ -141,6 +145,7 @@ def _build_request_from_flags(
     metrics: tuple[str, ...],
     dataset: str | None,
     experiment: ExperimentConfig | None = None,
+    exports: EvaluationExports | None = None,
 ) -> JobSubmissionRequest:
     """Build a JobSubmissionRequest from CLI flags."""
     parameters: dict[str, Any] = {}
@@ -158,6 +163,7 @@ def _build_request_from_flags(
         model=ModelConfig(url=model_url, name=model_name),
         benchmarks=benchmarks,
         experiment=experiment,
+        exports=exports,
     )
 
 
@@ -167,7 +173,11 @@ def _build_request_from_flags(
     "config_file",
     type=click.Path(exists=True),
     default=None,
-    help="YAML or JSON config file for the evaluation job.",
+    help=(
+        "YAML or JSON file with the full job body. When set, all other "
+        "job-related flags on this command are ignored; use --wait, "
+        "--timeout, --poll-interval, and --format with --config as needed."
+    ),
 )
 @click.option("--name", default=None, help="Job name (required if not using --config).")
 @click.option("--model-url", default=None, help="Model endpoint URL.")
@@ -183,7 +193,22 @@ def _build_request_from_flags(
     "--experiment",
     "experiment_name",
     default=None,
-    help="MLflow experiment name for this job (optional).",
+    help="MLflow experiment name (only when using inline flags, not with --config).",
+)
+@click.option(
+    "--oci-host",
+    default=None,
+    help="OCI registry host for exports (e.g. quay.io; inline flags only).",
+)
+@click.option(
+    "--oci-repository",
+    default=None,
+    help="OCI repository path (org/repo; use with --oci-host).",
+)
+@click.option(
+    "--oci-connection",
+    default=None,
+    help="Kubernetes Secret name for registry auth (optional; use with OCI host/repo).",
 )
 @click.option(
     "--wait", "wait_for", is_flag=True, default=False, help="Block until job completes."
@@ -213,6 +238,9 @@ def eval_run(
     dataset: str | None,
     description: str | None,
     experiment_name: str | None,
+    oci_host: str | None,
+    oci_repository: str | None,
+    oci_connection: str | None,
     wait_for: bool,
     timeout: float | None,
     poll_interval: float,
@@ -221,6 +249,8 @@ def eval_run(
     """Submit an evaluation job.
 
     Use --config to submit from a YAML/JSON file, or specify flags inline.
+    Do not mix: with --config, the file is the full job body; all other
+    job-related options apply only to the inline-flags path.
 
     \b
     Examples:
@@ -231,6 +261,9 @@ def eval_run(
       evalhub eval run --name my-eval --model-url http://vllm:8000/v1 \\
           --model-name llama3 --provider lm_evaluation_harness -b mmlu \\
           --experiment my-experiment
+      evalhub eval run --name my-eval --model-url http://vllm:8000/v1 \\
+          --model-name llama3 --provider guidellm -b quick_perf_test \\
+          --oci-host quay.io --oci-repository myorg/myrepo --oci-connection my-oci-secret
     """
     client = get_client(ctx)
 
@@ -246,6 +279,28 @@ def eval_run(
         experiment: ExperimentConfig | None = None
         if experiment_name:
             experiment = ExperimentConfig(name=experiment_name)
+
+        oci_flags = (oci_host, oci_repository, oci_connection)
+        if any(oci_flags) and not (oci_host and oci_repository):
+            raise click.ClickException(
+                "OCI export requires --oci-host and --oci-repository "
+                "(--oci-connection is optional)."
+            )
+        exports: EvaluationExports | None = None
+        if oci_host and oci_repository:
+            k8s = (
+                OCIConnectionConfig(connection=oci_connection)
+                if oci_connection
+                else None
+            )
+            exports = EvaluationExports(
+                oci=EvaluationExportsOCI(
+                    coordinates=OCICoordinates(
+                        oci_host=oci_host, oci_repository=oci_repository
+                    ),
+                    k8s=k8s,
+                )
+            )
         request = _build_request_from_flags(
             name=cast(str, name),
             model_url=cast(str, model_url),
@@ -256,6 +311,7 @@ def eval_run(
             metrics=metrics,
             dataset=dataset,
             experiment=experiment,
+            exports=exports,
         )
 
     job = client.jobs.submit(request)
