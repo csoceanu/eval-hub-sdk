@@ -43,6 +43,19 @@ from evalhub.models.api import (
 # Environment variable to enable real server testing
 EVALHUB_TEST_BASE_URL = os.environ.get("EVALHUB_TEST_BASE_URL")
 
+JOBS_LIST_PARAM_CASES = [
+    pytest.param(
+        {"status": JobStatus.RUNNING}, {"status": "running"}, id="status-only"
+    ),
+    pytest.param({"limit": 10}, {"limit": "10"}, id="limit-only"),
+    pytest.param(
+        {"status": JobStatus.COMPLETED, "limit": 5},
+        {"status": "completed", "limit": "5"},
+        id="status-and-limit",
+    ),
+    pytest.param({}, {}, id="no-params"),
+]
+
 
 @pytest.fixture
 def use_real_server() -> bool:
@@ -387,6 +400,49 @@ class TestEvalHubClient:
             assert job.name == "oci-export-eval"
 
         client.close()
+
+    @pytest.mark.skipif(
+        EVALHUB_TEST_BASE_URL is not None,
+        reason="Skipping in real server mode",
+    )
+    @pytest.mark.parametrize("kwargs, expected_params", JOBS_LIST_PARAM_CASES)
+    def test_sync_jobs_list_query_params(
+        self, kwargs: dict[str, Any], expected_params: dict[str, str]
+    ) -> None:
+        """Test that jobs.list sends correct query parameter names to the server."""
+        with SyncEvalHubClient() as client:
+            mock_response = Mock()
+            mock_response.json.return_value = {"total_count": 0, "items": []}
+
+            with patch.object(
+                client, "_request_get", return_value=mock_response
+            ) as mock_get:
+                client.jobs.list(**kwargs)
+                mock_get.assert_called_once()
+                _, call_kwargs = mock_get.call_args
+                assert call_kwargs.get("params", {}) == expected_params
+
+    @pytest.mark.skipif(
+        EVALHUB_TEST_BASE_URL is not None,
+        reason="Skipping in real server mode",
+    )
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kwargs, expected_params", JOBS_LIST_PARAM_CASES)
+    async def test_async_jobs_list_query_params(
+        self, kwargs: dict[str, Any], expected_params: dict[str, str]
+    ) -> None:
+        """Test that async jobs.list sends correct query parameter names to the server."""
+        async with AsyncEvalHubClient() as client:
+            mock_response = Mock()
+            mock_response.json.return_value = {"total_count": 0, "items": []}
+
+            with patch.object(
+                client, "_request_get", return_value=mock_response
+            ) as mock_get:
+                await client.jobs.list(**kwargs)
+                mock_get.assert_called_once()
+                _, call_kwargs = mock_get.call_args
+                assert call_kwargs.get("params", {}) == expected_params
 
     def test_sync_client_context_manager(self) -> None:
         """Test SyncEvalHubClient as context manager."""
