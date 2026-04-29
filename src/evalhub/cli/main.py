@@ -146,9 +146,12 @@ def _build_request_from_flags(
     dataset: str | None,
     experiment: ExperimentConfig | None = None,
     exports: EvaluationExports | None = None,
+    extra_params: dict[str, str] | None = None,
 ) -> JobSubmissionRequest:
     """Build a JobSubmissionRequest from CLI flags."""
     parameters: dict[str, Any] = {}
+    if extra_params:
+        parameters.update(extra_params)
     if metrics:
         parameters["metrics"] = list(metrics)
     if dataset:
@@ -189,6 +192,16 @@ def _build_request_from_flags(
 )
 @click.option("--dataset", default=None, help="Dataset identifier or path.")
 @click.option("--description", default=None, help="Job description.")
+@click.option(
+    "--param",
+    "-p",
+    "params",
+    multiple=True,
+    help=(
+        "Benchmark parameter as key=value (repeatable). "
+        "Example: --param tokenizer=my-tokenizer --param batch_size=3"
+    ),
+)
 @click.option(
     "--experiment",
     "experiment_name",
@@ -237,6 +250,7 @@ def eval_run(
     metrics: tuple[str, ...],
     dataset: str | None,
     description: str | None,
+    params: tuple[str, ...],
     experiment_name: str | None,
     oci_host: str | None,
     oci_repository: str | None,
@@ -264,6 +278,9 @@ def eval_run(
       evalhub eval run --name my-eval --model-url http://vllm:8000/v1 \\
           --model-name llama3 --provider guidellm -b quick_perf_test \\
           --oci-host quay.io --oci-repository myorg/myrepo --oci-connection my-oci-secret
+      evalhub eval run --name my-eval --model-url http://vllm:8000/v1 \\
+          --model-name llama3 --provider lm_evaluation_harness -b mmlu \\
+          --param tokenizer=my-tokenizer --param batch_size=3
     """
     client = get_client(ctx)
 
@@ -301,6 +318,14 @@ def eval_run(
                     k8s=k8s,
                 )
             )
+        extra_params: dict[str, str] = {}
+        for p in params:
+            if "=" not in p:
+                raise click.ClickException(
+                    f"Invalid --param format: {p!r}. Expected key=value."
+                )
+            key, value = p.split("=", 1)
+            extra_params[key] = value
         request = _build_request_from_flags(
             name=cast(str, name),
             model_url=cast(str, model_url),
@@ -312,6 +337,7 @@ def eval_run(
             dataset=dataset,
             experiment=experiment,
             exports=exports,
+            extra_params=extra_params,
         )
 
     job = client.jobs.submit(request)

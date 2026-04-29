@@ -327,6 +327,120 @@ class TestEvalRun:
             )
         assert result.exit_code == 1
 
+    def test_run_with_param_flags(
+        self, runner: CliRunner, config_file: Path, mock_client: MagicMock
+    ) -> None:
+        mock_client.jobs.submit.return_value = _make_job()
+        with patch("evalhub.cli.main.get_client", return_value=mock_client):
+            result = runner.invoke(
+                main,
+                [
+                    "eval",
+                    "run",
+                    "--name",
+                    "param-eval",
+                    "--model-url",
+                    "http://vllm:8000/v1",
+                    "--model-name",
+                    "llama3",
+                    "--provider",
+                    "lm_eval",
+                    "-b",
+                    "mmlu",
+                    "--param",
+                    "tokenizer=my-tokenizer",
+                    "--param",
+                    "batch_size=3",
+                ],
+            )
+        assert result.exit_code == 0
+        assert "Job submitted: eval-123" in result.output
+        req = mock_client.jobs.submit.call_args[0][0]
+        assert req.benchmarks[0].parameters["tokenizer"] == "my-tokenizer"
+        assert req.benchmarks[0].parameters["batch_size"] == "3"
+
+    def test_run_with_param_short_flag(
+        self, runner: CliRunner, config_file: Path, mock_client: MagicMock
+    ) -> None:
+        mock_client.jobs.submit.return_value = _make_job()
+        with patch("evalhub.cli.main.get_client", return_value=mock_client):
+            result = runner.invoke(
+                main,
+                [
+                    "eval",
+                    "run",
+                    "--name",
+                    "param-eval",
+                    "--model-url",
+                    "http://vllm:8000/v1",
+                    "--model-name",
+                    "llama3",
+                    "--provider",
+                    "lm_eval",
+                    "-b",
+                    "mmlu",
+                    "-p",
+                    "tokenizer=my-tokenizer",
+                ],
+            )
+        assert result.exit_code == 0
+        req = mock_client.jobs.submit.call_args[0][0]
+        assert req.benchmarks[0].parameters["tokenizer"] == "my-tokenizer"
+
+    def test_run_with_invalid_param_format(
+        self, runner: CliRunner, config_file: Path, mock_client: MagicMock
+    ) -> None:
+        with patch("evalhub.cli.main.get_client", return_value=mock_client):
+            result = runner.invoke(
+                main,
+                [
+                    "eval",
+                    "run",
+                    "--name",
+                    "param-eval",
+                    "--model-url",
+                    "http://vllm:8000/v1",
+                    "--model-name",
+                    "llama3",
+                    "--provider",
+                    "lm_eval",
+                    "-b",
+                    "mmlu",
+                    "--param",
+                    "no-equals-sign",
+                ],
+            )
+        assert result.exit_code != 0
+        assert "key=value" in result.output
+
+    def test_run_param_value_with_equals(
+        self, runner: CliRunner, config_file: Path, mock_client: MagicMock
+    ) -> None:
+        mock_client.jobs.submit.return_value = _make_job()
+        with patch("evalhub.cli.main.get_client", return_value=mock_client):
+            result = runner.invoke(
+                main,
+                [
+                    "eval",
+                    "run",
+                    "--name",
+                    "param-eval",
+                    "--model-url",
+                    "http://vllm:8000/v1",
+                    "--model-name",
+                    "llama3",
+                    "--provider",
+                    "lm_eval",
+                    "-b",
+                    "mmlu",
+                    "--param",
+                    "url=http://example.com?a=1&b=2",
+                ],
+            )
+        assert result.exit_code == 0
+        req = mock_client.jobs.submit.call_args[0][0]
+        assert req.benchmarks[0].parameters["url"] == "http://example.com?a=1&b=2"
+
     def test_run_json_output(
         self,
         runner: CliRunner,
