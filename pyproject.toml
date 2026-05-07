@@ -194,6 +194,7 @@ asyncio_default_fixture_loop_scope = "function"
 name = "cz_conventional_commits"
 version_scheme = "pep440"
 tag_format = "v$version"
+allowed_prefixes = ["Merge", "Revert", "RHOAIENG-"]
 
 [dependency-groups]
 dev = [
