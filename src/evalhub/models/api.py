@@ -601,9 +601,6 @@ class Resource(BaseModel):
     updated_at: datetime | None = Field(
         default=None, description="Last update timestamp"
     )
-    read_only: bool | None = Field(
-        default=None, description="Whether the resource is read-only"
-    )
     owner: str | None = Field(default=None, description="Resource owner")
 
 
@@ -626,12 +623,13 @@ class Benchmark(BaseModel):
     """Benchmark information from EvalHub API."""
 
     id: str = Field(..., description="Unique benchmark identifier")
+    url: str | None = Field(default=None, description="Benchmark URL")
     name: str = Field(..., description="Human-readable benchmark name")
-    description: str = Field(..., description="Benchmark description")
+    description: str | None = Field(default=None, description="Benchmark description")
     category: str = Field(..., description="Benchmark category")
     metrics: list[str] = Field(default_factory=list, description="List of metrics")
-    num_few_shot: int | None = Field(None, description="Number of few-shot examples")
-    dataset_size: int | None = Field(None, description="Size of the evaluation dataset")
+    num_few_shot: int = Field(default=0, description="Number of few-shot examples")
+    dataset_size: int = Field(default=0, description="Size of the evaluation dataset")
     tags: list[str] = Field(default_factory=list, description="Tags for categorization")
     primary_score: PrimaryScore | None = Field(
         None, description="Primary score configuration"
@@ -653,8 +651,13 @@ class Provider(BaseModel):
     """
 
     resource: Resource = Field(..., description="Resource metadata")
-    name: str = Field(..., description="Provider display name")
-    description: str = Field(..., description="Provider description")
+    name: str = Field(..., description="Provider name")
+    title: str = Field(default="", description="Provider display title")
+    description: str | None = Field(default=None, description="Provider description")
+    tags: list[str] = Field(default_factory=list, description="Provider tags")
+    runtime: dict[str, Any] | None = Field(
+        default=None, description="Runtime configuration"
+    )
     benchmarks: list[Benchmark] = Field(
         default_factory=list, description="Benchmarks supported by this provider"
     )
@@ -671,6 +674,21 @@ class ProviderList(BaseModel):
     def handle_none_items(cls, v: list[Provider] | None) -> list[Provider]:
         """Convert None to empty list for compatibility with server responses."""
         return v if v is not None else []
+
+
+class ProviderCreateRequest(BaseModel):
+    """Request body for creating a new evaluation provider."""
+
+    name: str = Field(..., description="Provider name")
+    title: str = Field(default="", description="Provider display title")
+    description: str | None = Field(default=None, description="Provider description")
+    tags: list[str] = Field(default_factory=list, description="Provider tags")
+    runtime: dict[str, Any] | None = Field(
+        default=None, description="Runtime configuration"
+    )
+    benchmarks: list[Benchmark] = Field(
+        default_factory=list, description="Benchmarks provided by this provider"
+    )
 
 
 class BenchmarkReference(BaseModel):

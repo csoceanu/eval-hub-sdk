@@ -25,6 +25,7 @@ from evalhub.models import (
     ModelConfig,
     OCIConnectionConfig,
     OCICoordinates,
+    ProviderCreateRequest,
     QueueConfig,
     S3TestDataRef,
     TestDataRef,
@@ -937,7 +938,7 @@ def collections_run(
 
 @main.group()
 def providers() -> None:
-    """List and inspect evaluation providers.
+    """Manage evaluation providers.
 
     \b
     Providers are evaluation frameworks (e.g. lm-evaluation-harness,
@@ -948,6 +949,8 @@ def providers() -> None:
     Examples:
       evalhub providers list
       evalhub providers describe lm_evaluation_harness
+      evalhub providers create --file my-provider.yaml
+      evalhub providers delete my-provider
     """
 
 
@@ -1034,6 +1037,52 @@ def providers_describe(
         )
     else:
         click.echo("  (none)")
+
+
+@providers.command("create")
+@click.option(
+    "--file",
+    "spec_file",
+    type=click.Path(exists=True),
+    required=True,
+    help="YAML or JSON file describing the provider.",
+)
+@format_option()
+@click.pass_context
+@handle_api_errors
+def providers_create(ctx: click.Context, spec_file: str, output_format: str) -> None:
+    """Create a new evaluation provider from a spec file.
+
+    \b
+    Examples:
+      evalhub providers create --file my-provider.yaml
+      evalhub providers create --file provider.json --format json
+    """
+    data = _load_config_file(spec_file)
+    request = ProviderCreateRequest(**data)
+    client = get_client(ctx)
+    provider = client.providers.create(request.model_dump(mode="json"))
+    structured = output_format in ("json", "yaml")
+    click.echo(f"Provider created: {provider.resource.id}", err=structured)
+    if structured:
+        output([provider.model_dump(mode="json")], output_format=output_format)
+
+
+@providers.command("delete")
+@click.argument("provider_id")
+@click.confirmation_option(prompt="Are you sure you want to delete this provider?")
+@click.pass_context
+@handle_api_errors
+def providers_delete(ctx: click.Context, provider_id: str) -> None:
+    """Delete an evaluation provider.
+
+    \b
+    Examples:
+      evalhub providers delete my-provider
+    """
+    client = get_client(ctx)
+    client.providers.delete(provider_id)
+    click.echo(f"Provider {provider_id} deleted.")
 
 
 @main.command("health")
