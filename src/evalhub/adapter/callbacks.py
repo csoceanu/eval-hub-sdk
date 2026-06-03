@@ -13,15 +13,22 @@ from .config import EvalHubMode, MlflowBackend
 from .mlflow import MlflowArtifact
 from .models import (
     EnvironmentCardMetadata,
+    ErrorInfo,
     JobCallbacks,
     JobResults,
     JobSpec,
     JobStatusUpdate,
+    MessageInfo,
     OCIArtifactResult,
     OCIArtifactSpec,
 )
 from .oci import DEFAULT_OCI_PROXY_HOST, OCIArtifactPersister
 from .oci.persister import OCIArtifactContext
+
+_MLFLOW_SAVE_FAILED = ErrorInfo(
+    message="Failed to save evaluation results to MLflow.",
+    message_code="mlflow_save_failed",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +66,13 @@ class _MlflowOps:
       ``mlflow-skinny`` to be installed.
     """
 
-    def __init__(self, backend: MlflowBackend = MlflowBackend.ODH) -> None:
+    def __init__(
+        self,
+        backend: MlflowBackend = MlflowBackend.ODH,
+        callbacks: DefaultCallbacks | None = None,
+    ) -> None:
         self._backend = backend
+        self._callbacks = callbacks
 
     @staticmethod
     def _build_run_name(job_spec: JobSpec) -> str:
@@ -81,7 +93,18 @@ class _MlflowOps:
                 return self._save_upstream(results, job_spec, artifacts)
             return self._save_odh(results, job_spec, artifacts)
         except Exception as e:
-            logger.error("Failed to save to MLflow: %s", e)
+            logger.error("Failed to save to MLflow: %s", e, exc_info=True)
+            if self._callbacks is not None:
+                self._callbacks.report_status(
+                    JobStatusUpdate(
+                        status=JobStatus.FAILED,
+                        error=_MLFLOW_SAVE_FAILED,
+                        message=MessageInfo(
+                            message="Evaluation failed",
+                            message_code="evaluation_failed",
+                        ),
+                    )
+                )
             raise RuntimeError(f"MLflow save failed: {e}") from e
 
     # ------------------------------------------------------------------
@@ -384,8 +407,8 @@ class DefaultCallbacks(JobCallbacks):
         else:
             self._ca_bundle = self._resolve_ca_bundle(ca_bundle_path)
 
-        # MLflow integration (single-method API)
-        self.mlflow = _MlflowOps(backend=mlflow_backend)
+        # MLflow integration (single-method API via callbacks.mlflow.save)
+        self.mlflow = _MlflowOps(backend=mlflow_backend, callbacks=self)
 
         # Try to import httpx for sidecar communication
         self._httpx_available = False
