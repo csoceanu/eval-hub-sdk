@@ -334,7 +334,13 @@ def extract_by_path(data: Any, path: str) -> Any:
 def substitute_template(template: Any, variables: dict[str, str]) -> Any:
     """Recursively substitute ``{key}`` placeholders in string values."""
     if isinstance(template, str):
-        return template.format_map(variables)
+        try:
+            return template.format_map(variables)
+        except KeyError as exc:
+            raise ValueError(
+                f"Unknown placeholder {exc} in template. "
+                f"Available: {', '.join(variables.keys())}"
+            ) from exc
     if isinstance(template, dict):
         return {k: substitute_template(v, variables) for k, v in template.items()}
     if isinstance(template, list):
@@ -491,6 +497,9 @@ def _send_request(
     )
 
 
+_RESERVED_FIELDS = {"response", "raw_response", "error", "latency_ms"}
+
+
 def _flatten_record(record: CollectedRecord) -> dict[str, Any]:
     """Flatten a record for JSONL output.
 
@@ -499,6 +508,11 @@ def _flatten_record(record: CollectedRecord) -> dict[str, Any]:
     ``extra_fields`` on top.
     """
     data = dict(record.source_fields)
+    collisions = _RESERVED_FIELDS & record.source_fields.keys()
+    if collisions:
+        logger.warning(
+            "Source fields %s will be overwritten by collector output", collisions
+        )
     data["response"] = record.response
     data["raw_response"] = record.raw_response
     data["error"] = record.error
