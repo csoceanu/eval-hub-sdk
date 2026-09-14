@@ -46,7 +46,7 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
-def _reset_global_state():
+def _reset_global_state() -> None:  # type: ignore[misc]
     """Reset module-level state and the global TracerProvider for each test."""
     saved_provider = trace_api._TRACER_PROVIDER
     saved_done = trace_api._TRACER_PROVIDER_SET_ONCE._done
@@ -66,11 +66,12 @@ def _reset_global_state():
 
     # Remove any OTEL LoggingHandlers that tests may have added to root logger
     root = logging.getLogger()
-    root.handlers = [
-        h for h in root.handlers if not isinstance(h, LoggingHandler)
-    ]
+    root.handlers = [h for h in root.handlers if not isinstance(h, LoggingHandler)]
 
-    if telemetry_mod._log_provider_installed is not None and telemetry_mod._owns_log_provider:
+    if (
+        telemetry_mod._log_provider_installed is not None
+        and telemetry_mod._owns_log_provider
+    ):
         try:
             telemetry_mod._log_provider_installed.shutdown()
         except Exception:
@@ -223,8 +224,7 @@ class TestSeverityMapping:
         matching = [
             r
             for r in records
-            if r.log_record.body is not None
-            and "num test" in str(r.log_record.body)
+            if r.log_record.body is not None and "num test" in str(r.log_record.body)
         ]
         assert matching
         lr = matching[-1].log_record
@@ -255,8 +255,7 @@ class TestTraceCorrelation:
         matching = [
             r
             for r in records
-            if r.log_record.body is not None
-            and "inside span" in str(r.log_record.body)
+            if r.log_record.body is not None and "inside span" in str(r.log_record.body)
         ]
         assert matching
         lr = matching[-1].log_record
@@ -407,18 +406,14 @@ class TestLogShutdown:
 class TestJobContextFilter:
     def test_filter_always_returns_true(self) -> None:
         f = _JobContextFilter()
-        record = logging.LogRecord(
-            "test", logging.INFO, "", 0, "msg", (), None
-        )
+        record = logging.LogRecord("test", logging.INFO, "", 0, "msg", (), None)
         assert f.filter(record) is True
 
     def test_filter_sets_attributes_on_record(self) -> None:
         set_log_job_context(job_id="j1", benchmark_id="b1")
 
         f = _JobContextFilter()
-        record = logging.LogRecord(
-            "test", logging.INFO, "", 0, "msg", (), None
-        )
+        record = logging.LogRecord("test", logging.INFO, "", 0, "msg", (), None)
         f.filter(record)
 
         assert getattr(record, "evalhub.job_id") == "j1"
@@ -428,9 +423,7 @@ class TestJobContextFilter:
         clear_log_job_context()
 
         f = _JobContextFilter()
-        record = logging.LogRecord(
-            "test", logging.INFO, "", 0, "msg", (), None
-        )
+        record = logging.LogRecord("test", logging.INFO, "", 0, "msg", (), None)
         f.filter(record)
 
         assert not hasattr(record, "evalhub.job_id")
