@@ -9,10 +9,13 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from evalhub.adapter.auth import ModelCredentials
 from evalhub.adapter.collector import (
     CollectorConfig,
     CollectorError,
     CollectorProtocol,
+    _extract_openai,
+    _resolve_auth_headers,
     collect_responses,
     collect_responses_from_parameters,
     extract_by_path,
@@ -117,6 +120,53 @@ class TestCollectorConfigValidation:
         )
         assert config.model == "chatbot"
         assert config.protocol == CollectorProtocol.OPENAI_CHAT
+
+    def test_kubernetes_ref_token_is_not_sent_to_endpoint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EVALHUB_MODE", "k8s")
+        config = CollectorConfig(
+            questions_path=tmp_path / "q.csv",
+            output_dir=tmp_path / "out",
+            endpoint_url="https://api.example/v1",
+            model="chatbot",
+        )
+
+        headers = _resolve_auth_headers(config, ModelCredentials(api_key="api-key:ref"))
+
+        assert "Authorization" not in headers
+
+    def test_kubernetes_explicit_endpoint_key_is_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EVALHUB_MODE", "k8s")
+        monkeypatch.setenv("LIVE_ENDPOINT_KEY", "real-key")
+        config = CollectorConfig(
+            questions_path=tmp_path / "q.csv",
+            output_dir=tmp_path / "out",
+            endpoint_url="https://api.example/v1",
+            model="chatbot",
+            api_key_env="LIVE_ENDPOINT_KEY",
+        )
+
+        headers = _resolve_auth_headers(config, ModelCredentials(api_key="api-key:ref"))
+
+        assert headers["Authorization"] == "Bearer real-key"
+
+    def test_openai_tool_call_response_is_not_silently_empty(self) -> None:
+        with pytest.raises(ValueError, match="tool_calls"):
+            _extract_openai(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": None,
+                                "tool_calls": [{"function": {"name": "search"}}],
+                            }
+                        }
+                    ]
+                }
+            )
 
     def test_from_parameters_missing_key(self) -> None:
         with pytest.raises(ValueError, match="live_collection"):
@@ -447,6 +497,13 @@ class TestCollectOpenAI:
         with pytest.raises(CollectorError):
             collect_responses(config, client=mock_client, credentials=None)
 
+        manifest = json.loads(
+            (tmp_path / "out" / "manifest.json").read_text(encoding="utf-8")
+        )
+        assert manifest["total"] == 2
+        assert manifest["completed"] == 0
+        assert manifest["failed"] == 1
+
     def test_best_effort_records_errors(self, tmp_path: Path) -> None:
         qpath = tmp_path / "q.csv"
         qpath.write_text("question\nhello\nworld\n", encoding="utf-8")
@@ -508,6 +565,26 @@ class TestCollectOpenAI:
             for line in (tmp_path / "out" / "responses.jsonl").read_text().splitlines()
         ]
         assert rows[0]["response"] == "after retry"
+
+    def test_does_not_retry_client_errors(self, tmp_path: Path) -> None:
+        qpath = tmp_path / "q.csv"
+        qpath.write_text("question\nhello\n", encoding="utf-8")
+        mock_client = MagicMock()
+        mock_client.post.return_value = _response(401, {"error": "unauthorized"})
+
+        config = CollectorConfig(
+            questions_path=qpath,
+            output_dir=tmp_path / "out",
+            endpoint_url="https://api.example/v1",
+            model="chatbot",
+            max_retries=3,
+            use_model_credentials=False,
+        )
+
+        manifest = collect_responses(config, client=mock_client, credentials=None)
+
+        assert manifest.failed == 1
+        assert mock_client.post.call_count == 1
 
     def test_progress_callback(self, tmp_path: Path) -> None:
         qpath = tmp_path / "q.csv"

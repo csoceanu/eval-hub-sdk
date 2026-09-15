@@ -29,6 +29,8 @@ from typing import Any, Self, cast
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .auth import ModelCredentials, resolve_model_credentials
+from .config import EvalHubMode
+from .settings import AdapterSettings
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +167,7 @@ class CollectedRecord(BaseModel):
     raw_response: dict[str, Any] | None = None
     error: str | None = None
     latency_ms: float | None = None
+    error_cause: Any = Field(default=None, exclude=True)
 
 
 class CollectionManifest(BaseModel):
@@ -248,6 +251,7 @@ def collect_responses(
                         raise CollectorError(
                             record.error,
                             question_id=question.question_id,
+                            cause=record.error_cause,
                         )
                 else:
                     completed += 1
@@ -258,21 +262,22 @@ def collect_responses(
         if owns_client and hasattr(active_client, "close"):
             active_client.close()
 
-    manifest = CollectionManifest(
-        protocol=config.protocol.value,
-        endpoint_url=config.endpoint_url,
-        model=config.model,
-        questions_path=str(config.questions_path),
-        output_path=str(output_path),
-        total=total,
-        completed=completed,
-        failed=failed,
-    )
-    manifest_path = config.output_dir / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(manifest.model_dump(mode="json"), indent=2, default=str) + "\n",
-        encoding="utf-8",
-    )
+        # Preserve a partial manifest when fail_fast aborts collection.
+        manifest = CollectionManifest(
+            protocol=config.protocol.value,
+            endpoint_url=config.endpoint_url,
+            model=config.model,
+            questions_path=str(config.questions_path),
+            output_path=str(output_path),
+            total=total,
+            completed=completed,
+            failed=failed,
+        )
+        manifest_path = config.output_dir / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(manifest.model_dump(mode="json"), indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
     return manifest
 
 
@@ -354,7 +359,14 @@ def _resolve_auth_headers(
 ) -> dict[str, str]:
     headers: dict[str, str] = {}
     if credentials and credentials.api_key:
-        headers["Authorization"] = f"Bearer {credentials.api_key}"
+        if AdapterSettings.from_env().mode == EvalHubMode.K8S:
+            logger.warning(
+                "Ignoring Kubernetes model credential ref token for direct live "
+                "endpoint access; configure api_key_env or request_headers with "
+                "the endpoint credential"
+            )
+        else:
+            headers["Authorization"] = f"Bearer {credentials.api_key}"
     if config.api_key_env:
         api_key = os.getenv(config.api_key_env)
         if not api_key:
@@ -449,6 +461,7 @@ def _send_request(
     extractor: Callable[[dict[str, Any]], str | None],
 ) -> CollectedRecord:
     last_error: str | None = None
+    last_cause: Exception | None = None
     for attempt in range(config.max_retries + 1):
         start = time.monotonic()
         try:
@@ -481,7 +494,13 @@ def _send_request(
                 latency_ms=latency_ms,
             )
         except Exception as exc:
+            last_cause = exc
             last_error = f"{type(exc).__name__}: {exc}"
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if isinstance(exc, ValueError) or (
+                isinstance(status_code, int) and 400 <= status_code < 500
+            ):
+                break
             if attempt < config.max_retries and config.retry_backoff_seconds > 0:
                 delay = min(
                     config.retry_backoff_seconds * (2**attempt),
@@ -492,6 +511,7 @@ def _send_request(
     return CollectedRecord(
         source_fields=question.source_row,
         error=last_error,
+        error_cause=last_cause,
     )
 
 
@@ -534,7 +554,14 @@ def _extract_extra_fields(
 
 def _extract_openai(raw_response: dict[str, Any]) -> str | None:
     value = extract_by_path(raw_response, "choices.0.message.content")
-    return str(value) if value is not None else None
+    if value is not None:
+        return str(value)
+    if extract_by_path(raw_response, "choices.0.message.tool_calls"):
+        raise ValueError(
+            "OpenAI response contains tool_calls but no message.content; "
+            "configure generic_http or a custom extractor for tool responses"
+        )
+    raise ValueError("OpenAI response is missing choices.0.message.content")
 
 
 def _extract_generic(raw_response: dict[str, Any], response_path: str) -> str | None:
