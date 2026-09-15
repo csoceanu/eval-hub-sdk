@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Generator
 from unittest.mock import MagicMock, patch
 
 import evalhub.adapter.telemetry as telemetry_mod
@@ -46,7 +47,7 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
-def _reset_global_state() -> None:  # type: ignore[misc]
+def _reset_global_state() -> Generator[None, None, None]:
     """Reset module-level state and the global TracerProvider for each test."""
     saved_provider = trace_api._TRACER_PROVIDER
     saved_done = trace_api._TRACER_PROVIDER_SET_ONCE._done
@@ -54,6 +55,7 @@ def _reset_global_state() -> None:  # type: ignore[misc]
     saved_owns = telemetry_mod._owns_provider
     saved_log = telemetry_mod._log_provider_installed
     saved_log_owns = telemetry_mod._owns_log_provider
+    saved_log_handler = telemetry_mod._log_handler_installed
 
     trace_api._TRACER_PROVIDER = None
     trace_api._TRACER_PROVIDER_SET_ONCE._done = False
@@ -61,6 +63,7 @@ def _reset_global_state() -> None:  # type: ignore[misc]
     telemetry_mod._owns_provider = False
     telemetry_mod._log_provider_installed = None
     telemetry_mod._owns_log_provider = False
+    telemetry_mod._log_handler_installed = None
 
     yield
 
@@ -86,6 +89,7 @@ def _reset_global_state() -> None:  # type: ignore[misc]
     telemetry_mod._owns_provider = saved_owns
     telemetry_mod._log_provider_installed = saved_log
     telemetry_mod._owns_log_provider = saved_log_owns
+    telemetry_mod._log_handler_installed = saved_log_handler
     trace_api._TRACER_PROVIDER = saved_provider
     trace_api._TRACER_PROVIDER_SET_ONCE._done = saved_done
 

@@ -64,6 +64,7 @@ _provider_installed: TracerProvider | None = None
 _owns_provider: bool = False
 _log_provider_installed: LoggerProvider | None = None
 _owns_log_provider: bool = False
+_log_handler_installed: logging.Handler | None = None
 
 # ---------------------------------------------------------------------------
 # Job-level log context
@@ -204,6 +205,7 @@ def configure_telemetry(
                 "Reusing existing TracerProvider (service=%s)",
                 dict(current.resource.attributes).get("service.name", "unknown"),
             )
+            _configure_log_pipeline(current.resource, resolved_endpoint)
             return True
 
         resolved_name = (
@@ -230,6 +232,7 @@ def configure_telemetry(
                     "reusing it (service=%s)",
                     dict(active.resource.attributes).get("service.name", "unknown"),
                 )
+                _configure_log_pipeline(active.resource, resolved_endpoint)
                 return True
             logger.warning(
                 "set_tracer_provider was ignored and no SDK provider is active. "
@@ -261,7 +264,7 @@ def _configure_log_pipeline(resource: Any, endpoint: str) -> None:
     correct ``severity_text``, ``severity_number``, ``trace_id``/``span_id``,
     resource attributes, and job-level attributes.
     """
-    global _log_provider_installed, _owns_log_provider  # noqa: PLW0603
+    global _log_provider_installed, _owns_log_provider, _log_handler_installed  # noqa: PLW0603
 
     try:
         from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
@@ -284,6 +287,7 @@ def _configure_log_pipeline(resource: Any, endpoint: str) -> None:
 
     _log_provider_installed = log_provider
     _owns_log_provider = True
+    _log_handler_installed = handler
 
     logger.info("OTEL LoggerProvider installed (endpoint=%s)", endpoint)
 
@@ -296,7 +300,12 @@ def _shutdown_provider() -> None:
     """
     global _provider_installed, _owns_provider  # noqa: PLW0603
     global _log_provider_installed, _owns_log_provider  # noqa: PLW0603
+    global _log_handler_installed  # noqa: PLW0603
     with _lock:
+        if _log_handler_installed is not None:
+            logging.getLogger().removeHandler(_log_handler_installed)
+            _log_handler_installed = None
+
         if _log_provider_installed is not None and _owns_log_provider:
             try:
                 _log_provider_installed.shutdown()
