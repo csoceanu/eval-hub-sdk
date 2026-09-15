@@ -722,7 +722,8 @@ to the live endpoint. Configure `api_key_env` or `request_headers` with the live
 endpoint's actual credential instead; the collector will not send the sidecar
 reference token directly to the endpoint.
 
-See the module docstring in `src/evalhub/adapter/collector.py` for all options.
+See [`src/evalhub/adapter/collector.py`](src/evalhub/adapter/collector.py) for the
+complete collector configuration reference.
 
 ## Deployment
 
