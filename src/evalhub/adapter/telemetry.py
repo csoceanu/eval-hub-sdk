@@ -1,4 +1,4 @@
-"""OpenTelemetry span instrumentation for the adapter framework.
+"""OpenTelemetry instrumentation for the adapter framework (spans + logs).
 
 Provides ``EvalTracer``, which exposes context-manager methods for the five
 evaluation span types defined by the EvalHub observability contract:
@@ -9,12 +9,25 @@ evaluation span types defined by the EvalHub observability contract:
 - ``evalhub.evaluation.scoring``
 - ``evalhub.evaluation.result_log``
 
+:func:`configure_telemetry` also installs an **OTEL Logs pipeline** that
+bridges Python ``logging`` to the collector.  Every log record automatically
+includes:
+
+- ``severity_text`` / ``severity_number`` mapped from the Python log level
+- ``trace_id`` / ``span_id`` from the current span context (log–trace
+  correlation)
+- ``service.name`` and other ``Resource`` attributes shared with the span
+  exporter
+- Job-level attributes (``evalhub.job_id``, ``evalhub.benchmark_id``, …) set
+  via :func:`set_log_job_context`
+
 When no ``TracerProvider`` is configured (i.e. OTEL environment variables are
 absent), the underlying ``trace.get_tracer()`` returns a no-op tracer and all
-context managers become zero-cost no-ops.
+context managers become zero-cost no-ops.  The log pipeline is likewise
+skipped.
 
-Use :func:`configure_telemetry` to install a ``TracerProvider`` with an OTLP
-exporter before creating any ``EvalTracer`` instances::
+Use :func:`configure_telemetry` to install providers before creating any
+``EvalTracer`` instances::
 
     from evalhub.adapter.telemetry import configure_telemetry
 
@@ -29,13 +42,15 @@ import os
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Any
 
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.propagate import extract
 
 if TYPE_CHECKING:
+    from opentelemetry.sdk._logs import LoggerProvider
     from opentelemetry.sdk.trace import TracerProvider
 
     from .models.job import JobSpec
@@ -47,6 +62,62 @@ _DEFAULT_SERVICE_NAME = "evalhub-adapter"
 _lock = threading.Lock()
 _provider_installed: TracerProvider | None = None
 _owns_provider: bool = False
+_log_provider_installed: LoggerProvider | None = None
+_owns_log_provider: bool = False
+_log_handler_installed: logging.Handler | None = None
+
+# ---------------------------------------------------------------------------
+# Job-level log context
+# ---------------------------------------------------------------------------
+
+_job_log_context: ContextVar[dict[str, str]] = ContextVar(
+    "evalhub_job_log_context", default={}
+)
+
+
+def set_log_job_context(
+    *,
+    job_id: str | None = None,
+    benchmark_id: str | None = None,
+    provider_id: str | None = None,
+    model_id: str | None = None,
+) -> None:
+    """Set job-level attributes injected into every subsequent OTEL log record.
+
+    Call once at the start of a job — typically from
+    ``EvalTracer.from_job_spec`` or an adapter's ``main()`` — so that all log
+    lines emitted during the run carry the job identity for filtering in the
+    observability backend.
+    """
+    ctx: dict[str, str] = {}
+    if job_id is not None:
+        ctx["evalhub.job_id"] = job_id
+    if benchmark_id is not None:
+        ctx["evalhub.benchmark_id"] = benchmark_id
+    if provider_id is not None:
+        ctx["evalhub.provider_id"] = provider_id
+    if model_id is not None:
+        ctx["evalhub.model_id"] = model_id
+    _job_log_context.set(ctx)
+
+
+def clear_log_job_context() -> None:
+    """Remove all job-level log attributes (e.g. between successive jobs)."""
+    _job_log_context.set({})
+
+
+class _JobContextFilter(logging.Filter):
+    """Logging filter that enriches records with job-level OTEL attributes.
+
+    Attributes stored via :func:`set_log_job_context` are copied onto the
+    Python ``LogRecord`` so that the OTEL ``LoggingHandler`` forwards them as
+    structured log-record attributes.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        for key, value in _job_log_context.get({}).items():
+            setattr(record, key, value)
+        return True
 
 
 def configure_telemetry(
@@ -54,10 +125,10 @@ def configure_telemetry(
     *,
     endpoint: str | None = None,
 ) -> bool:
-    """Install a ``TracerProvider`` with an OTLP exporter if OTEL is configured.
+    """Install OTLP span and log exporters if OTEL is configured.
 
     Call this once at adapter startup — before any ``EvalTracer`` is created —
-    to enable span export.  The function is **thread-safe** and
+    to enable span and log export.  The function is **thread-safe** and
     **idempotent**: concurrent or repeated calls are serialised by a lock and
     return ``True`` immediately once a provider has been accepted.
 
@@ -76,6 +147,13 @@ def configure_telemetry(
     When neither ``endpoint`` nor ``OTEL_EXPORTER_OTLP_ENDPOINT`` is set the
     function returns ``False`` and no provider is installed, preserving the
     default no-op tracer behaviour.
+
+    **Logs pipeline** — when OTEL is configured, a ``LoggerProvider`` with
+    ``OTLPLogExporter`` is installed and a ``LoggingHandler`` is added to the
+    Python root logger.  Every Python log record is exported as a structured
+    OTEL log record with ``severity_text``, ``severity_number``,
+    ``trace_id``/``span_id`` (from the active span), and any job-level
+    attributes set via :func:`set_log_job_context`.
 
     Args:
         service_name: Override for ``OTEL_SERVICE_NAME``.
@@ -98,7 +176,7 @@ def configure_telemetry(
         resolved_endpoint = endpoint or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
         if not resolved_endpoint:
             logger.debug(
-                "OTEL_EXPORTER_OTLP_ENDPOINT not set — skipping TracerProvider setup"
+                "OTEL_EXPORTER_OTLP_ENDPOINT not set — skipping telemetry setup"
             )
             return False
 
@@ -127,6 +205,7 @@ def configure_telemetry(
                 "Reusing existing TracerProvider (service=%s)",
                 dict(current.resource.attributes).get("service.name", "unknown"),
             )
+            _configure_log_pipeline(current.resource, resolved_endpoint)
             return True
 
         resolved_name = (
@@ -153,6 +232,7 @@ def configure_telemetry(
                     "reusing it (service=%s)",
                     dict(active.resource.attributes).get("service.name", "unknown"),
                 )
+                _configure_log_pipeline(active.resource, resolved_endpoint)
                 return True
             logger.warning(
                 "set_tracer_provider was ignored and no SDK provider is active. "
@@ -169,17 +249,71 @@ def configure_telemetry(
             resolved_name,
             resolved_endpoint,
         )
+
+        _configure_log_pipeline(resource, resolved_endpoint)
+
         return True
 
 
-def _shutdown_provider() -> None:
-    """Flush and shut down the provider registered by :func:`configure_telemetry`.
+def _configure_log_pipeline(resource: Any, endpoint: str) -> None:
+    """Install a ``LoggerProvider`` + OTLP exporter and bridge Python logging.
 
-    Only shuts down the provider if we created it (not when we reused an
+    Called internally by :func:`configure_telemetry` after the span pipeline is
+    set up.  Adds a ``LoggingHandler`` to the root Python logger so that every
+    ``logging.info(…)`` call is exported as a structured OTEL log record with
+    correct ``severity_text``, ``severity_number``, ``trace_id``/``span_id``,
+    resource attributes, and job-level attributes.
+    """
+    global _log_provider_installed, _owns_log_provider, _log_handler_installed  # noqa: PLW0603
+
+    try:
+        from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
+            OTLPLogExporter,
+        )
+        from opentelemetry.sdk._logs import LoggerProvider as _LoggerProvider
+        from opentelemetry.sdk._logs import LoggingHandler
+        from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+    except ImportError:
+        logger.debug("OTEL log exporter not available — log pipeline skipped")
+        return
+
+    log_exporter = OTLPLogExporter(endpoint=endpoint)
+    log_provider = _LoggerProvider(resource=resource)
+    log_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
+
+    handler = LoggingHandler(level=logging.NOTSET, logger_provider=log_provider)
+    handler.addFilter(_JobContextFilter())
+    logging.getLogger().addHandler(handler)
+
+    _log_provider_installed = log_provider
+    _owns_log_provider = True
+    _log_handler_installed = handler
+
+    logger.info("OTEL LoggerProvider installed (endpoint=%s)", endpoint)
+
+
+def _shutdown_provider() -> None:
+    """Flush and shut down providers registered by :func:`configure_telemetry`.
+
+    Only shuts down providers if we created them (not when we reused an
     existing global provider).
     """
     global _provider_installed, _owns_provider  # noqa: PLW0603
+    global _log_provider_installed, _owns_log_provider  # noqa: PLW0603
+    global _log_handler_installed  # noqa: PLW0603
     with _lock:
+        if _log_handler_installed is not None:
+            logging.getLogger().removeHandler(_log_handler_installed)
+            _log_handler_installed = None
+
+        if _log_provider_installed is not None and _owns_log_provider:
+            try:
+                _log_provider_installed.shutdown()
+            except Exception:
+                logger.debug("LoggerProvider shutdown error", exc_info=True)
+        _log_provider_installed = None
+        _owns_log_provider = False
+
         if _provider_installed is not None and _owns_provider:
             try:
                 _provider_installed.shutdown()
@@ -245,12 +379,23 @@ class EvalTracer:
 
     @classmethod
     def from_job_spec(cls, job_spec: JobSpec) -> EvalTracer:
-        """Create a tracer pre-populated with job identity attributes."""
+        """Create a tracer pre-populated with job identity attributes.
+
+        Also calls :func:`set_log_job_context` so that all subsequent Python
+        log records carry the same job identity as OTEL log-record attributes.
+        """
         tracer = cls()
         tracer._job_id = job_spec.id
         tracer._provider = job_spec.provider_id
         tracer._collection = job_spec.benchmark_id
         tracer._model_id = job_spec.model.name if job_spec.model else None
+
+        set_log_job_context(
+            job_id=job_spec.id,
+            benchmark_id=job_spec.benchmark_id,
+            provider_id=job_spec.provider_id,
+            model_id=job_spec.model.name if job_spec.model else None,
+        )
         return tracer
 
     @staticmethod

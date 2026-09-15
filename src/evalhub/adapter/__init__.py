@@ -99,7 +99,12 @@ from .models import (
 )
 from .oci import OCIArtifactPersister
 from .settings import AdapterSettings
-from .telemetry import EvalTracer, configure_telemetry
+from .telemetry import (
+    EvalTracer,
+    clear_log_job_context,
+    configure_telemetry,
+    set_log_job_context,
+)
 
 # Legacy API is available but deprecated
 # from evalhub.adapter.legacy import ...
@@ -137,6 +142,8 @@ __all__ = [
     # Telemetry
     "EvalTracer",
     "configure_telemetry",
+    "set_log_job_context",
+    "clear_log_job_context",
     # Common models (re-exported for convenience)
     "JobStatus",
     "ModelConfig",
