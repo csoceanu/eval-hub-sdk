@@ -11,10 +11,12 @@ import httpx
 import pytest
 from evalhub.adapter.auth import ModelCredentials
 from evalhub.adapter.collector import (
+    CollectedRecord,
     CollectorConfig,
     CollectorError,
     CollectorProtocol,
     _extract_openai,
+    _flatten_record,
     _resolve_auth_headers,
     collect_responses,
     collect_responses_from_parameters,
@@ -70,11 +72,20 @@ class TestIsConfigured:
 
 class TestCollectorConfigValidation:
     def test_rejects_non_http_endpoint(self, tmp_path: Path) -> None:
-        with pytest.raises(ValueError, match="http:// or https://"):
+        with pytest.raises(ValueError, match="https://"):
             CollectorConfig(
                 questions_path=tmp_path / "q.csv",
                 output_dir=tmp_path / "out",
                 endpoint_url="file:///etc/passwd",
+                model="chatbot",
+            )
+
+    def test_rejects_http_endpoint(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="https://"):
+            CollectorConfig(
+                questions_path=tmp_path / "q.csv",
+                output_dir=tmp_path / "out",
+                endpoint_url="http://api.example/v1",
                 model="chatbot",
             )
 
@@ -586,6 +597,33 @@ class TestCollectOpenAI:
         assert manifest.failed == 1
         assert mock_client.post.call_count == 1
 
+    def test_retries_rate_limited_response(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        qpath = tmp_path / "q.csv"
+        qpath.write_text("question\nhello\n", encoding="utf-8")
+        monkeypatch.setattr("evalhub.adapter.collector.time.sleep", lambda _: None)
+        mock_client = MagicMock()
+        mock_client.post.side_effect = [
+            _response(429, {"error": "rate limited"}),
+            _openai_ok("after backoff"),
+        ]
+
+        config = CollectorConfig(
+            questions_path=qpath,
+            output_dir=tmp_path / "out",
+            endpoint_url="https://api.example/v1",
+            model="chatbot",
+            max_retries=1,
+            retry_backoff_seconds=0.1,
+            use_model_credentials=False,
+        )
+
+        manifest = collect_responses(config, client=mock_client, credentials=None)
+
+        assert manifest.completed == 1
+        assert mock_client.post.call_count == 2
+
     def test_progress_callback(self, tmp_path: Path) -> None:
         qpath = tmp_path / "q.csv"
         qpath.write_text("question\na\nb\nc\n", encoding="utf-8")
@@ -690,6 +728,27 @@ class TestCollectGenericHTTP:
             for line in (tmp_path / "out" / "responses.jsonl").read_text().splitlines()
         ]
         assert rows[0]["response"] == "Kubernetes is..."
+
+    def test_extra_fields_cannot_overwrite_collector_fields(self) -> None:
+        record = CollectedRecord(
+            response="collected answer",
+            raw_response={"answer": "collected answer"},
+            error=None,
+            latency_ms=12.5,
+            extra_fields={
+                "response": "wrong answer",
+                "raw_response": {"answer": "wrong answer"},
+                "error": "wrong error",
+                "latency_ms": 999.0,
+            },
+        )
+
+        flattened = _flatten_record(record)
+
+        assert flattened["response"] == "collected answer"
+        assert flattened["raw_response"] == {"answer": "collected answer"}
+        assert flattened["error"] is None
+        assert flattened["latency_ms"] == 12.5
 
     def test_extra_response_paths_extracted(self, tmp_path: Path) -> None:
         qpath = tmp_path / "q.csv"

@@ -129,8 +129,8 @@ class CollectorConfig(BaseModel):
     @field_validator("endpoint_url")
     @classmethod
     def _validate_endpoint_url(cls, value: str) -> str:
-        if not value.lower().startswith(("http://", "https://")):
-            raise ValueError("endpoint_url must use http:// or https://")
+        if not value.lower().startswith("https://"):
+            raise ValueError("endpoint_url must use https://")
         return value.rstrip("/")
 
     @model_validator(mode="after")
@@ -498,7 +498,9 @@ def _send_request(
             last_error = f"{type(exc).__name__}: {exc}"
             status_code = getattr(getattr(exc, "response", None), "status_code", None)
             if isinstance(exc, ValueError) or (
-                isinstance(status_code, int) and 400 <= status_code < 500
+                isinstance(status_code, int)
+                and 400 <= status_code < 500
+                and status_code != 429
             ):
                 break
             if attempt < config.max_retries and config.retry_backoff_seconds > 0:
@@ -531,12 +533,14 @@ def _flatten_record(record: CollectedRecord) -> dict[str, Any]:
         logger.warning(
             "Source fields %s will be overwritten by collector output", collisions
         )
+    if record.extra_fields:
+        data.update(record.extra_fields)
+    # Extra response paths are user-configurable, so reapply collector-owned
+    # fields after merging to prevent them from overwriting collected values.
     data["response"] = record.response
     data["raw_response"] = record.raw_response
     data["error"] = record.error
     data["latency_ms"] = record.latency_ms
-    if record.extra_fields:
-        data.update(record.extra_fields)
     return data
 
 
